@@ -7,6 +7,7 @@ import json
 from datetime import datetime
 import openai
 from dotenv import load_dotenv
+import requests
 
 # Load environment variables
 load_dotenv()
@@ -505,6 +506,38 @@ class GoogleMeetController:
                 f.write(summary)
             
             logger.info(f"Summary saved to {summary_file}")
+            
+            # Post the summary to the webhook URL if configured
+            webhook_url = os.getenv("WEBHOOK_URL")
+            if webhook_url:
+                try:
+                    logger.info(f"Posting summary to webhook: {webhook_url}")
+                    
+                    # Prepare payload with meeting details and summary
+                    payload = {
+                        "meeting_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+                        "transcript_file": os.path.basename(transcript_file),
+                        "summary": summary,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # Send POST request to webhook
+                    response = requests.post(
+                        webhook_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    if response.status_code >= 200 and response.status_code < 300:
+                        logger.info(f"Successfully posted summary to webhook. Response: {response.status_code}")
+                    else:
+                        logger.error(f"Failed to post summary to webhook. Status code: {response.status_code}, Response: {response.text}")
+                        
+                except Exception as webhook_error:
+                    logger.error(f"Error posting summary to webhook: {webhook_error}")
+            else:
+                logger.warning("WEBHOOK_URL not configured in .env file. Summary not posted.")
+            
             return summary
             
         except Exception as e:
@@ -519,6 +552,31 @@ class GoogleMeetController:
                 logger.info(f"Error message saved to {summary_file}")
             except Exception as write_error:
                 logger.error(f"Failed to write error message to summary file: {write_error}")
+            
+            # Try to post error to webhook if configured
+            webhook_url = os.getenv("WEBHOOK_URL")
+            if webhook_url:
+                try:
+                    logger.info(f"Posting error to webhook: {webhook_url}")
+                    
+                    # Prepare payload with error details
+                    payload = {
+                        "meeting_date": datetime.now().strftime("%Y-%m-%d_%H-%M-%S"),
+                        "transcript_file": os.path.basename(transcript_file),
+                        "error": error_msg,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+                    # Send POST request to webhook
+                    response = requests.post(
+                        webhook_url,
+                        json=payload,
+                        headers={"Content-Type": "application/json"}
+                    )
+                    
+                    logger.info(f"Error posted to webhook. Response: {response.status_code}")
+                except Exception as webhook_error:
+                    logger.error(f"Error posting error to webhook: {webhook_error}")
                 
             return error_msg
 
