@@ -172,8 +172,73 @@ class GoogleMeetController:
             logger.error(f"Error joining meeting: {e}")
             return False
 
+    def _monitor_participants(self, page: Page) -> None:
+        """Monitor the number of participants and leave when everyone else has left."""
+        logger.info("Starting to monitor participants...")
+        try:
+            # Give UI time to fully load after joining
+            logger.info("Waiting for meeting UI to stabilize...")
+            page.wait_for_timeout(5000)
+
+            about_to_leave = False
+            leave_countdown = 30  # 30 seconds countdown
+
+            while True:
+                try:
+                    # Look for the specific participant count div
+                    count_div = page.locator('div.uGOf1d').first
+                    if count_div.is_visible(timeout=1000):
+                        count_text = count_div.text_content()
+                        try:
+                            count = int(count_text)
+                            logger.info(f"Current participant count: {count}")
+                            
+                            if count == 1:
+                                if not about_to_leave:
+                                    about_to_leave = True
+                                    logger.info(f"Only 1 participant detected. Will leave in {leave_countdown} seconds...")
+                                    page.wait_for_timeout(leave_countdown * 1000)  # Convert to milliseconds
+                                    logger.info("Leaving meeting as countdown finished...")
+                                    self._leave_meeting(page)
+                                    break
+                            else:
+                                about_to_leave = False
+                        except ValueError:
+                            logger.debug(f"Could not convert count text to integer: {count_text}")
+                except Exception as e:
+                    logger.debug(f"Error checking participant count: {e}")
+                
+                # Wait before next check
+                page.wait_for_timeout(5000)
+
+        except Exception as e:
+            logger.error(f"Error in participant monitoring: {e}")
+            self._leave_meeting(page)
+
+    def _leave_meeting(self, page: Page) -> None:
+        """Attempt to leave the meeting gracefully."""
+        leave_selectors = [
+            'button[aria-label*="leave"]',
+            'button[aria-label*="Leave"]',
+            '[role="button"][aria-label*="leave"]',
+            '[role="button"][aria-label*="Leave"]',
+            'button[aria-label="Leave call"]',
+            '[data-mdc-dialog-action="leave"]'
+        ]
+        for selector in leave_selectors:
+            try:
+                button = page.locator(selector).first
+                if button.is_visible(timeout=1000):
+                    button.click()
+                    logger.info("Successfully left the meeting")
+                    return
+            except:
+                continue
+        
+        logger.warning("Could not find leave button, closing browser")
+
     def join_google_meet(self, meet_url: str) -> None:
-        """Join a Google Meet call with video and microphone turned off."""
+        """Join a Google Meet call."""
         logger.info(f"Starting to join meeting: {meet_url}")
         start_time = time.time()
         
@@ -189,22 +254,19 @@ class GoogleMeetController:
                 logger.info(f"Navigating to meeting URL: {meet_url}")
                 page.goto(meet_url)
                 
-                if not self._wait_for_meeting_load(page):
-                    logger.error("Failed to load meeting interface")
-                    return
+                if self._wait_for_meeting_load(page):
+                    logger.info("Configuring meeting settings...")
+                    self._toggle_device(page, "camera")
+                    self._toggle_device(page, "microphone")
+                    
+                    if self._join_meeting(page):
+                        elapsed_time = time.time() - start_time
+                        logger.info(f"Successfully joined the meeting (took {elapsed_time:.1f} seconds)")
+                        # Start monitoring participants instead of waiting fixed time
+                        self._monitor_participants(page)
+                    else:
+                        logger.error("Failed to join the meeting")
                 
-                logger.info("Configuring meeting settings...")
-                self._toggle_device(page, "camera")
-                self._toggle_device(page, "microphone")
-                
-                if self._join_meeting(page):
-                    elapsed_time = time.time() - start_time
-                    logger.info(f"Successfully joined the meeting (took {elapsed_time:.1f} seconds)")
-                    logger.info("Waiting for 5 seconds to ensure connection...")
-                    page.wait_for_timeout(5000)
-                else:
-                    logger.error("Failed to join the meeting")
-            
             except Exception as e:
                 logger.error(f"Unexpected error while joining meeting: {e}")
             finally:
