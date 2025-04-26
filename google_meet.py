@@ -3,6 +3,8 @@ import os
 from typing import Optional
 import logging
 import time
+import json
+from datetime import datetime
 
 # Set up logging with timestamp
 logging.basicConfig(
@@ -16,6 +18,9 @@ class GoogleMeetController:
     def __init__(self, user_data_dir: Optional[str] = None):
         self.user_data_dir = user_data_dir or os.path.join(os.getcwd(), 'browser_data')
         logger.info(f"Initializing GoogleMeetController with data directory: {self.user_data_dir}")
+        # Create a directory for storing transcripts if it doesn't exist
+        self.transcripts_dir = os.path.join(os.getcwd(), 'transcripts')
+        os.makedirs(self.transcripts_dir, exist_ok=True)
 
     def setup_browser(self) -> None:
         """Launch a browser for first-time setup. User should manually sign in."""
@@ -257,6 +262,17 @@ class GoogleMeetController:
 
             about_to_leave = False
             leave_countdown = 30  # 30 seconds countdown
+            
+            # Initialize transcript extraction variables
+            transcript_data = []
+            meeting_date = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+            filename = os.path.join(self.transcripts_dir, f"transcript_{meeting_date}.json")
+            
+            # Create a file for real-time transcript saving
+            with open(filename, 'w') as f:
+                f.write('{"transcript": []}')
+            
+            logger.info("Starting transcript extraction alongside participant monitoring...")
 
             while True:
                 try:
@@ -283,11 +299,67 @@ class GoogleMeetController:
                 except Exception as e:
                     logger.debug(f"Error checking participant count: {e}")
                 
+                # Extract transcript data during each monitoring cycle
+                try:
+                    # Look for caption container
+                    caption_elements = page.locator('div.nMcdL')
+                    count = caption_elements.count()
+                    
+                    if count > 0:
+                        for i in range(count):
+                            try:
+                                caption_element = caption_elements.nth(i)
+                                
+                                # Extract speaker name
+                                speaker_element = caption_element.locator('span.NWpY1d').first
+                                speaker_name = speaker_element.text_content() if speaker_element.is_visible(timeout=500) else "Unknown"
+                                
+                                # Extract caption text
+                                text_element = caption_element.locator('div.bh44bd').first
+                                caption_text = text_element.text_content() if text_element.is_visible(timeout=500) else ""
+                                
+                                if caption_text:
+                                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                    entry = {
+                                        "timestamp": timestamp,
+                                        "speaker": speaker_name,
+                                        "text": caption_text
+                                    }
+                                    
+                                    # Check if this is a new entry to avoid duplicates
+                                    if not any(existing["text"] == caption_text and existing["speaker"] == speaker_name 
+                                              for existing in transcript_data):
+                                        transcript_data.append(entry)
+                                        logger.info(f"New caption from {speaker_name}: {caption_text[:30]}...")
+                                        
+                                        # Save transcript incrementally
+                                        with open(filename, 'r') as f:
+                                            data = json.load(f)
+                                        
+                                        data["transcript"].append(entry)
+                                        
+                                        with open(filename, 'w') as f:
+                                            json.dump(data, f, indent=2)
+                            except Exception as e:
+                                logger.debug(f"Error processing caption element {i}: {e}")
+                except Exception as e:
+                    logger.debug(f"Error during caption extraction cycle: {e}")
+                
                 # Wait before next check
                 page.wait_for_timeout(5000)
 
         except Exception as e:
             logger.error(f"Error in participant monitoring: {e}")
+            
+            # Try to save whatever transcript we've collected so far
+            if 'transcript_data' in locals() and transcript_data and 'filename' in locals():
+                try:
+                    with open(filename, 'w') as f:
+                        json.dump({"transcript": transcript_data}, f, indent=2)
+                    logger.info(f"Saved partial transcript to {filename}")
+                except Exception as save_error:
+                    logger.error(f"Failed to save partial transcript: {save_error}")
+                    
             self._leave_meeting(page)
 
     def _leave_meeting(self, page: Page) -> None:
@@ -311,6 +383,14 @@ class GoogleMeetController:
                 continue
         
         logger.warning("Could not find leave button, closing browser")
+
+    def _extract_and_save_transcript(self, page: Page) -> None:
+        """
+        This method is deprecated. Transcript extraction is now handled in _monitor_participants.
+        This stub remains for backward compatibility.
+        """
+        logger.warning("The _extract_and_save_transcript method is deprecated. Transcripts are now handled in _monitor_participants.")
+        pass
 
     def join_google_meet(self, meet_url: str) -> None:
         """Join a Google Meet call."""
@@ -341,7 +421,7 @@ class GoogleMeetController:
                         # Turn on captions after joining
                         self._turn_on_captions(page)
                         
-                        # Start monitoring participants
+                        # Start monitoring participants and extracting transcript
                         self._monitor_participants(page)
                     else:
                         logger.error("Failed to join the meeting")
