@@ -172,6 +172,81 @@ class GoogleMeetController:
             logger.error(f"Error joining meeting: {e}")
             return False
 
+    def _turn_on_captions(self, page: Page) -> bool:
+        """Turn on meeting captions if they're not already enabled."""
+        logger.info("Attempting to turn on captions...")
+        try:
+            # Wait for meeting UI to stabilize first
+            logger.info("Waiting for meeting UI to stabilize before enabling captions...")
+            page.wait_for_timeout(5000)
+            
+            # Try a direct approach with force=True and multiple attempts
+            caption_button_selectors = [
+                'button[jsname="r8qRAd"][aria-label="Turn on captions"]',
+                'button.VYBDae-Bz112c-LgbsSe[jsname="r8qRAd"]',
+                'button:has(i.google-symbols:text("closed_caption"))',
+                'button[aria-pressed="false"]:has(.google-symbols)',
+                'button:has(.VYBDae-Bz112c-kBDsod-Rtc0Jf)'
+            ]
+            
+            # First, try to find any visible button matching our selectors
+            for selector in caption_button_selectors:
+                try:
+                    # Check if any buttons match this selector
+                    buttons = page.locator(selector)
+                    count = buttons.count()
+                    
+                    if count == 0:
+                        logger.debug(f"No buttons found for selector: {selector}")
+                        continue
+                    
+                    logger.info(f"Found {count} potential caption buttons with selector: {selector}")
+                    
+                    # Try to click the first visible button
+                    for i in range(count):
+                        button = buttons.nth(i)
+                        if button.is_visible(timeout=1000):
+                            logger.info(f"Attempting to click button {i+1} with selector: {selector}")
+                            
+                            # Try direct JavaScript click which can be more reliable
+                            try:
+                                page.evaluate(f"document.querySelectorAll('{selector}')[{i}].click()")
+                                logger.info("Successfully clicked captions button using JavaScript")
+                                page.wait_for_timeout(2000)
+                                return True
+                            except Exception as js_error:
+                                logger.debug(f"JavaScript click failed: {str(js_error)}")
+                                
+                                # Fall back to Playwright click with force=True
+                                try:
+                                    button.click(force=True, timeout=3000)
+                                    logger.info("Successfully clicked captions button with force=True")
+                                    page.wait_for_timeout(2000)
+                                    return True
+                                except Exception as click_error:
+                                    logger.debug(f"Force click failed: {str(click_error)}")
+                                    continue
+                except Exception as e:
+                    logger.debug(f"Error with selector '{selector}': {str(e)}")
+                    continue
+            
+            # If all selectors failed, try a more aggressive approach with keyboard shortcut
+            logger.info("Trying keyboard shortcut for captions (c key)")
+            try:
+                page.keyboard.press("c")
+                logger.info("Pressed 'c' key to toggle captions")
+                page.wait_for_timeout(2000)
+                return True
+            except Exception as key_error:
+                logger.debug(f"Keyboard shortcut failed: {str(key_error)}")
+            
+            logger.warning("Could not enable captions after trying all methods")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error turning on captions: {str(e)}")
+            return False
+
     def _monitor_participants(self, page: Page) -> None:
         """Monitor the number of participants and leave when everyone else has left."""
         logger.info("Starting to monitor participants...")
@@ -262,7 +337,11 @@ class GoogleMeetController:
                     if self._join_meeting(page):
                         elapsed_time = time.time() - start_time
                         logger.info(f"Successfully joined the meeting (took {elapsed_time:.1f} seconds)")
-                        # Start monitoring participants instead of waiting fixed time
+                        
+                        # Turn on captions after joining
+                        self._turn_on_captions(page)
+                        
+                        # Start monitoring participants
                         self._monitor_participants(page)
                     else:
                         logger.error("Failed to join the meeting")
