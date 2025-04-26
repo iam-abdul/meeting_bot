@@ -5,6 +5,11 @@ import logging
 import time
 import json
 from datetime import datetime
+import openai
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Set up logging with timestamp
 logging.basicConfig(
@@ -361,6 +366,12 @@ class GoogleMeetController:
                     logger.error(f"Failed to save partial transcript: {save_error}")
                     
             self._leave_meeting(page)
+        
+        # After leaving the meeting, summarize the transcript
+        if 'filename' in locals() and os.path.exists(filename):
+            logger.info("Meeting ended. Generating transcript summary...")
+            summary = self._summarize_transcript(filename)
+            logger.info(f"Transcript summary: {summary[:100]}...")  # Log the first 100 chars of summary
 
     def _leave_meeting(self, page: Page) -> None:
         """Attempt to leave the meeting gracefully."""
@@ -383,6 +394,133 @@ class GoogleMeetController:
                 continue
         
         logger.warning("Could not find leave button, closing browser")
+
+    def _summarize_transcript(self, transcript_file: str) -> str:
+        """
+        Summarize the meeting transcript using OpenAI.
+        
+        Args:
+            transcript_file: Path to the JSON file containing the transcript
+            
+        Returns:
+            str: The summary of the meeting
+        """
+        logger.info(f"Summarizing transcript from {transcript_file}")
+        try:
+            # Check if OpenAI API key is available
+            api_key = os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                logger.error("OpenAI API key not found in environment variables")
+                return "Error: OpenAI API key not found in environment variables"
+            
+            # Set the API key
+            openai.api_key = api_key
+            
+            # Load the transcript
+            with open(transcript_file, 'r') as f:
+                data = json.load(f)
+            
+            # Log the transcript data structure for debugging
+            logger.info(f"Transcript data structure: {json.dumps(data, indent=2)[:500]}...")
+            
+            if not data or "transcript" not in data or not data["transcript"]:
+                logger.warning("No transcript data found to summarize")
+                error_msg = "No transcript data available for summarization"
+                
+                # Save the error message to the summary file
+                summary_file = transcript_file.replace(".json", "_summary.txt")
+                with open(summary_file, 'w') as f:
+                    f.write(error_msg)
+                
+                logger.info(f"Empty summary notification saved to {summary_file}")
+                return error_msg
+            
+            # Log transcript length for debugging
+            logger.info(f"Found {len(data['transcript'])} transcript entries to summarize")
+            
+            # Preprocess transcript to remove duplicates and partial entries
+            processed_entries = []
+            speakers_text = {}  # Dictionary to track the latest text from each speaker
+            
+            # Sort entries by timestamp
+            sorted_entries = sorted(data['transcript'], key=lambda x: x['timestamp'])
+            
+            for entry in sorted_entries:
+                speaker = entry['speaker']
+                text = entry['text']
+                
+                # Check if this is a new speaker or a completely different message
+                if speaker not in speakers_text or not text.startswith(speakers_text[speaker][:min(len(speakers_text[speaker]), 20)]):
+                    # This is a new message
+                    processed_entries.append(entry)
+                    speakers_text[speaker] = text
+                else:
+                    # This might be an updated version of the previous message
+                    if len(text) > len(speakers_text[speaker]):
+                        # Replace the previous entry with this more complete one
+                        for i, prev_entry in enumerate(processed_entries):
+                            if prev_entry['speaker'] == speaker and prev_entry['text'].startswith(text[:min(len(prev_entry['text']), 20)]):
+                                processed_entries[i] = entry
+                                break
+                        else:
+                            # If no match found, add as new entry
+                            processed_entries.append(entry)
+                        
+                        speakers_text[speaker] = text
+            
+            logger.info(f"Processed transcript from {len(data['transcript'])} to {len(processed_entries)} entries after removing duplicates")
+            
+            # Format the processed transcript for the API
+            formatted_transcript = ""
+            for entry in processed_entries:
+                formatted_transcript += f"{entry['speaker']}: {entry['text']}\n"
+            
+            # Log a sample of the formatted transcript
+            logger.info(f"Formatted transcript sample: {formatted_transcript[:500]}...")
+            
+            # Create the prompt for summarization
+            prompt = f"Please provide a concise summary of the following meeting transcript, highlighting key points, decisions, and action items:\n\n{formatted_transcript}"
+            
+            # Call the OpenAI API
+            logger.info("Calling OpenAI API to generate summary")
+            response = openai.chat.completions.create(
+                model="o4-mini-2025-04-16",  # Can be configured based on needs
+                messages=[
+                    {"role": "system", "content": "You are a helpful assistant that summarizes meeting transcripts."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_completion_tokens=1500
+            )
+            
+            # Log the full API response for debugging
+            logger.info(f"OpenAI API response: {response}")
+            
+            # Extract and return the summary
+            summary = response.choices[0].message.content
+            logger.info(f"Generated summary: {summary}")
+            
+            # Save the summary alongside the transcript
+            summary_file = transcript_file.replace(".json", "_summary.txt")
+            with open(summary_file, 'w') as f:
+                f.write(summary)
+            
+            logger.info(f"Summary saved to {summary_file}")
+            return summary
+            
+        except Exception as e:
+            logger.error(f"Error summarizing transcript: {e}")
+            error_msg = f"Error summarizing transcript: {str(e)}"
+            
+            # Save the error message to the summary file
+            try:
+                summary_file = transcript_file.replace(".json", "_summary.txt")
+                with open(summary_file, 'w') as f:
+                    f.write(error_msg)
+                logger.info(f"Error message saved to {summary_file}")
+            except Exception as write_error:
+                logger.error(f"Failed to write error message to summary file: {write_error}")
+                
+            return error_msg
 
     def _extract_and_save_transcript(self, page: Page) -> None:
         """
