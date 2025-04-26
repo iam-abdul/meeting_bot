@@ -15,3 +15,10 @@ An open-source automated meeting assistant that joins your virtual meetings, tak
 - Python
 - Speaker Recognition
 - Meeting Platform APIs (Google Meet)
+
+## Usage
+
+- Clone the repository
+- Install dependencies
+- Set up environment variables
+- Run the application
