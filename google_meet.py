@@ -81,30 +81,69 @@ class GoogleMeetController:
         """Toggle camera or microphone if it's on."""
         logger.info(f"Checking {device_type} status...")
         try:
+            # Wait for the pre-join screen to stabilize
+            page.wait_for_timeout(2000)
+
+            # Comprehensive selectors for device controls
             selectors = [
-                f'div[role="button"][aria-label*="{device_type}"]',
+                # New Meet UI selectors
+                f'button[data-is-muted][aria-label*="{device_type}"]',
+                f'button[data-is-muted][aria-label*="{device_type.capitalize()}"]',
+                # Classic Meet UI selectors
                 f'div[role="button"][data-is-muted][aria-label*="{device_type}"]',
-                f'div[jsname][role="button"][aria-label*="{device_type}"]'
+                f'div[role="button"][data-is-muted][aria-label*="{device_type.capitalize()}"]',
+                # General selectors
+                f'[role="button"][aria-label*="{device_type}"]',
+                f'[role="button"][aria-label*="{device_type.capitalize()}"]',
+                # Additional selectors for specific cases
+                f'[data-tooltip*="{device_type}"][role="button"]',
+                f'[data-tooltip*="{device_type.capitalize()}"][role="button"]',
+                # Fallback to any element with matching aria-label
+                f'[aria-label*="{device_type}"]',
+                f'[aria-label*="{device_type.capitalize()}"]'
             ]
-            
+
+            # Try each selector
             for selector in selectors:
                 logger.debug(f"Trying selector: {selector}")
-                button = page.locator(selector).first
-                if button.is_visible(timeout=5000):
-                    state = button.get_attribute('data-is-muted', timeout=5000)
-                    if state is None or state == 'false':
-                        logger.info(f"Turning off {device_type}")
-                        button.click()
-                        time.sleep(1)  # Wait for state to update
-                        logger.info(f"{device_type.capitalize()} turned off successfully")
-                    else:
-                        logger.info(f"{device_type.capitalize()} is already off")
-                    return
-            logger.warning(f"No matching {device_type} control found")
-        except TimeoutError as e:
-            logger.warning(f"Could not find {device_type} button: {e}")
+                elements = page.locator(selector).all()
+                for button in elements:
+                    try:
+                        if button.is_visible(timeout=1000):
+                            # Check various attributes that might indicate device state
+                            aria_label = button.get_attribute('aria-label', timeout=1000) or ''
+                            is_muted = button.get_attribute('data-is-muted', timeout=1000)
+                            tooltip = button.get_attribute('data-tooltip', timeout=1000) or ''
+                            
+                            # Log the found element details for debugging
+                            logger.debug(f"Found {device_type} control:")
+                            logger.debug(f"- aria-label: {aria_label}")
+                            logger.debug(f"- data-is-muted: {is_muted}")
+                            logger.debug(f"- tooltip: {tooltip}")
+                            
+                            # Check if device is already off
+                            if (is_muted == 'true' or 
+                                'off' in aria_label.lower() or 
+                                'muted' in aria_label.lower() or
+                                'off' in tooltip.lower() or
+                                'muted' in tooltip.lower()):
+                                logger.info(f"{device_type.capitalize()} is already off")
+                                return
+
+                            # If we get here, device is probably on, so turn it off
+                            logger.info(f"Turning off {device_type}")
+                            button.click()
+                            # Wait for state change
+                            page.wait_for_timeout(1000)
+                            logger.info(f"{device_type.capitalize()} turned off")
+                            return
+                    except Exception as e:
+                        logger.debug(f"Error checking element with selector {selector}: {e}")
+                        continue
+
+            logger.warning(f"No matching {device_type} control found after trying all selectors")
         except Exception as e:
-            logger.error(f"Error toggling {device_type}: {e}")
+            logger.error(f"Error handling {device_type}: {e}")
 
     def _join_meeting(self, page: Page) -> bool:
         """Click the join meeting button."""
